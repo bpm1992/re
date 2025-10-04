@@ -6,6 +6,7 @@ include(CheckCXXSourceCompiles)
 
 option(USE_MBEDTLS "Enable MbedTLS" OFF)
 option(USE_TLS1_3_PHA "Enable TLS 1.3 Post-Handshake Auth" ON)
+option(USE_LIBSWRESAMPLE "Enable libswresample for enhanced audio resampling" ON)
 
 find_package(Backtrace)
 find_package(Threads REQUIRED)
@@ -15,6 +16,15 @@ if (USE_MBEDTLS)
 find_package(MBEDTLS)
 else()
 find_package(OpenSSL "1.1.1")
+endif()
+
+# Find libswresample
+if(USE_LIBSWRESAMPLE)
+  find_package(PkgConfig QUIET)
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBSWRESAMPLE libswresample)
+    pkg_check_modules(LIBAVUTIL libavutil)
+  endif()
 endif()
 
 option(USE_OPENSSL "Enable OpenSSL" ${OPENSSL_FOUND})
@@ -39,6 +49,10 @@ endif()
 
 if(ZLIB_FOUND)
   list(APPEND RE_DEFINITIONS USE_ZLIB)
+endif()
+
+if(LIBSWRESAMPLE_FOUND)
+  list(APPEND RE_DEFINITIONS USE_LIBSWRESAMPLE)
 endif()
 
 check_include_file(syslog.h HAVE_SYSLOG_H)
@@ -252,6 +266,17 @@ endif()
 
 if(ZLIB_FOUND)
   list(APPEND RE_LIBS ZLIB::ZLIB)
+endif()
+
+if(LIBSWRESAMPLE_FOUND)
+  list(APPEND RE_LIBS ${LIBSWRESAMPLE_LIBRARIES})
+  include_directories(${LIBSWRESAMPLE_INCLUDE_DIRS})
+  link_directories(${LIBSWRESAMPLE_LIBRARY_DIRS})
+  if(LIBAVUTIL_FOUND)
+    list(APPEND RE_LIBS ${LIBAVUTIL_LIBRARIES})
+    include_directories(${LIBAVUTIL_INCLUDE_DIRS})
+    link_directories(${LIBAVUTIL_LIBRARY_DIRS})
+  endif()
 endif()
 
 if(USE_OPENSSL)

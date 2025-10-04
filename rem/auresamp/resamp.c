@@ -8,6 +8,7 @@
 #include <re.h>
 #include <rem_fir.h>
 #include <rem_auresamp.h>
+#include "auresamp_internal.h"
 
 
 /* 48kHz sample-rate, 4kHz cutoff (pass 0-3kHz, stop 5-24kHz) */
@@ -173,6 +174,8 @@ void auresamp_init(struct auresamp *rs)
 
 	memset(rs, 0, sizeof(*rs));
 	fir_reset(&rs->fir);
+	rs->ext_ctx = NULL;
+	rs->use_external = false;
 }
 
 
@@ -192,96 +195,141 @@ void auresamp_init(struct auresamp *rs)
 int auresamp_setup(struct auresamp *rs, uint32_t irate, unsigned ich,
 		   uint32_t orate, unsigned och)
 {
+	int err;
+	
 	if (!rs || !irate || !ich || !orate || !och)
 		return EINVAL;
+
+	/* Clean up any existing external context */
+	if (rs->ext_ctx) {
+		auresamp_ext_ctx_close((struct auresamp_ext_ctx *)rs->ext_ctx);
+		rs->ext_ctx = NULL;
+		rs->use_external = false;
+	}
 
 	if (orate == irate && och == ich) {
 		auresamp_init(rs);
 		return 0;
 	}
 
+	/* First, try the built-in simple resampler */
+	bool can_use_simple = true;
+	
 	if (orate >= irate) {
-
 		if (orate % irate)
-			return ENOTSUP;
-
-		if (ich == 1 && och == 1)
-			rs->resample = upsample_mono2mono;
-		else if (ich == 1 && och == 2)
-			rs->resample = upsample_mono2stereo;
-		else if (ich == 2 && och == 1)
-			rs->resample = upsample_stereo2mono;
-		else if (ich == 2 && och == 2)
-			rs->resample = upsample_stereo2stereo;
-		else
-			return ENOTSUP;
-
-		if (!rs->up || orate != rs->orate || och != rs->och)
-			fir_reset(&rs->fir);
-
-		rs->ratio = orate / irate;
-		rs->up    = true;
-
-		if (orate == irate) {
-			rs->tapv = NULL;
-			rs->tapc = 0;
-		}
-		else if (orate == 48000 && irate == 16000) {
-			rs->tapv = fir_48_8;
-			rs->tapc = RE_ARRAY_SIZE(fir_48_8);
-		}
-		else if ((orate == 16000 && irate == 8000) ||
-                         (orate == 32000 && irate == 16000)) {
-			rs->tapv = fir_16_4;
-			rs->tapc = RE_ARRAY_SIZE(fir_16_4);
-		}
-		else {
-			rs->tapv = fir_48_4;
-			rs->tapc = RE_ARRAY_SIZE(fir_48_4);
-		}
-	}
-	else {
+			can_use_simple = false;
+	} else {
 		if (irate % orate)
-			return ENOTSUP;
+			can_use_simple = false;
+	}
 
-		if (ich == 1 && och == 1)
-			rs->resample = downsample_mono2mono;
-		else if (ich == 1 && och == 2)
-			rs->resample = downsample_mono2stereo;
-		else if (ich == 2 && och == 1)
-			rs->resample = downsample_stereo2mono;
-		else if (ich == 2 && och == 2)
-			rs->resample = downsample_stereo2stereo;
-		else
-			return ENOTSUP;
+	if (can_use_simple) {
+		/* Use original simple resampler logic */
+		if (orate >= irate) {
+			if (ich == 1 && och == 1)
+				rs->resample = upsample_mono2mono;
+			else if (ich == 1 && och == 2)
+				rs->resample = upsample_mono2stereo;
+			else if (ich == 2 && och == 1)
+				rs->resample = upsample_stereo2mono;
+			else if (ich == 2 && och == 2)
+				rs->resample = upsample_stereo2stereo;
+			else
+				can_use_simple = false;
 
-		if (rs->up || irate != rs->irate || ich != rs->ich)
-			fir_reset(&rs->fir);
+			if (can_use_simple) {
+				if (!rs->up || orate != rs->orate || och != rs->och)
+					fir_reset(&rs->fir);
 
-		rs->ratio = irate / orate;
-		rs->up    = false;
+				rs->ratio = orate / irate;
+				rs->up    = true;
 
-		if (irate == 48000 && orate == 16000) {
-			rs->tapv = fir_48_8;
-			rs->tapc = RE_ARRAY_SIZE(fir_48_8);
-		}
-		else if ((irate == 16000 && orate == 8000) ||
-                         (irate == 32000 && orate == 16000)) {
-			rs->tapv = fir_16_4;
-			rs->tapc = RE_ARRAY_SIZE(fir_16_4);
+				if (orate == irate) {
+					rs->tapv = NULL;
+					rs->tapc = 0;
+				}
+				else if (orate == 48000 && irate == 16000) {
+					rs->tapv = fir_48_8;
+					rs->tapc = RE_ARRAY_SIZE(fir_48_8);
+				}
+				else if ((orate == 16000 && irate == 8000) ||
+		                         (orate == 32000 && irate == 16000)) {
+					rs->tapv = fir_16_4;
+					rs->tapc = RE_ARRAY_SIZE(fir_16_4);
+				}
+				else {
+					rs->tapv = fir_48_4;
+					rs->tapc = RE_ARRAY_SIZE(fir_48_4);
+				}
+			}
 		}
 		else {
-			rs->tapv = fir_48_4;
-			rs->tapc = RE_ARRAY_SIZE(fir_48_4);
+			if (ich == 1 && och == 1)
+				rs->resample = downsample_mono2mono;
+			else if (ich == 1 && och == 2)
+				rs->resample = downsample_mono2stereo;
+			else if (ich == 2 && och == 1)
+				rs->resample = downsample_stereo2mono;
+			else if (ich == 2 && och == 2)
+				rs->resample = downsample_stereo2stereo;
+			else
+				can_use_simple = false;
+
+			if (can_use_simple) {
+				if (rs->up || irate != rs->irate || ich != rs->ich)
+					fir_reset(&rs->fir);
+
+				rs->ratio = irate / orate;
+				rs->up    = false;
+
+				if (irate == 48000 && orate == 16000) {
+					rs->tapv = fir_48_8;
+					rs->tapc = RE_ARRAY_SIZE(fir_48_8);
+				}
+				else if ((irate == 16000 && orate == 8000) ||
+		                         (irate == 32000 && orate == 16000)) {
+					rs->tapv = fir_16_4;
+					rs->tapc = RE_ARRAY_SIZE(fir_16_4);
+				}
+				else {
+					rs->tapv = fir_48_4;
+					rs->tapc = RE_ARRAY_SIZE(fir_48_4);
+				}
+			}
+		}
+
+		if (can_use_simple) {
+			rs->orate = orate;
+			rs->och   = och;
+			rs->irate = irate;
+			rs->ich   = ich;
+			rs->use_external = false;
+			
+			re_printf("auresamp: Using built-in resampler for %u->%u Hz\n",
+			          irate, orate);
+			return 0;
 		}
 	}
 
-	rs->orate = orate;
-	rs->och   = och;
-	rs->irate = irate;
-	rs->ich   = ich;
+	/* Simple resampler can't handle this, try external resampler */
+	struct auresamp_ext_ctx *ext_ctx = NULL;
+	err = auresamp_ext_ctx_setup(&ext_ctx, irate, ich, orate, och);
+	if (err == 0) {
+		rs->ext_ctx = ext_ctx;
+		rs->use_external = true;
+		rs->orate = orate;
+		rs->och   = och;
+		rs->irate = irate;
+		rs->ich   = ich;
+		
+		re_printf("auresamp: Using external resampler for %u->%u Hz (ratio: %.3f)\n",
+		          irate, orate, (double)orate / irate);
+		return 0;
+	}
 
-	return 0;
+	re_printf("auresamp: No suitable resampler available for %u->%u Hz\n",
+	          irate, orate);
+	return ENOTSUP;
 }
 
 
@@ -303,7 +351,17 @@ int auresamp(struct auresamp *rs, int16_t *outv, size_t *outc,
 {
 	size_t incc, outcc;
 
-	if (!rs || !rs->resample || !outv || !outc || !inv)
+	if (!rs || !outv || !outc || !inv)
+		return EINVAL;
+
+	/* Use external resampler if active */
+	if (rs->use_external && rs->ext_ctx) {
+		return auresamp_ext_ctx_convert((struct auresamp_ext_ctx *)rs->ext_ctx,
+		                               outv, outc, inv, inc);
+	}
+
+	/* Use built-in simple resampler */
+	if (!rs->resample)
 		return EINVAL;
 
 	incc = inc / rs->ich;
@@ -337,4 +395,90 @@ int auresamp(struct auresamp *rs, int16_t *outv, size_t *outc,
 	}
 
 	return 0;
+}
+
+
+/**
+ * Close and cleanup a resampler object
+ *
+ * @param rs Resampler to close
+ */
+void auresamp_close(struct auresamp *rs)
+{
+	if (!rs)
+		return;
+
+	if (rs->ext_ctx) {
+		re_printf("auresamp: Closing external resampler context\n");
+		auresamp_ext_ctx_close((struct auresamp_ext_ctx *)rs->ext_ctx);
+		rs->ext_ctx = NULL;
+		rs->use_external = false;
+	}
+}
+
+
+/**
+ * Calculate required output buffer size for resampling
+ *
+ * This function calculates the maximum possible output size for a given
+ * input size and sample rate conversion, with appropriate safety margins
+ * for fractional resampling.
+ *
+ * @param irate Input sample rate
+ * @param orate Output sample rate  
+ * @param input_samples Number of input samples (includes all channels)
+ * @param ch Number of channels
+ *
+ * @return Required output buffer size in samples
+ */
+size_t auresamp_calc_output_size(uint32_t irate, uint32_t orate, 
+				 size_t input_samples, unsigned ch)
+{
+	size_t output_samples;
+	
+	if (!irate || !orate || !input_samples || !ch)
+		return 0;
+	
+	/* Convert total samples to per-channel samples */
+	size_t input_frames = input_samples / ch;
+	
+	if (irate == orate) {
+		/* No resampling needed */
+		return input_samples;
+	}
+	
+	/* Calculate base output frames using 64-bit arithmetic to avoid overflow */
+	uint64_t output_frames = ((uint64_t)input_frames * orate) / irate;
+	
+	/* Add safety margin based on resampling direction and ratio type */
+	if (orate > irate) {
+		/* Upsampling: add margin for rounding and internal buffering */
+		if ((orate % irate) == 0) {
+			/* Integer ratio - minimal margin needed */
+			output_frames += 2;
+		} else {
+			/* Fractional ratio - add proportional margin */
+			output_frames += (output_frames * 5) / 100 + 2; /* 5% + 2 frames */
+		}
+	} else {
+		/* Downsampling: usually more predictable, smaller margin */
+		if ((irate % orate) == 0) {
+			/* Integer ratio - minimal margin */
+			output_frames += 1;
+		} else {
+			/* Fractional ratio - small margin */
+			output_frames += (output_frames * 2) / 100 + 1; /* 2% + 1 frame */
+		}
+	}
+	
+	/* Convert back to total samples */
+	output_samples = output_frames * ch;
+	
+	/* Ensure minimum reasonable size - don't allocate less than input for downsampling
+	 * as some resamplers may need temp space */
+	if (orate < irate && output_samples < input_samples) {
+		output_samples = input_samples;
+	}
+	
+	return output_samples;
 }

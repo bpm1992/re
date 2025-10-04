@@ -427,6 +427,7 @@ set(REM_SRCS
   rem/aulevel/aulevel.c
   rem/aumix/aumix.c
   rem/auresamp/resamp.c
+  rem/auresamp/auresamp_ext.c
   rem/autone/tone.c
   rem/avc/config.c
   rem/dtmf/dec.c
