@@ -21,8 +21,8 @@
 #include <re_main.h>
 #include <re_trace.h>
 #include <re_btrace.h>
+#include <rem_audio.h>
 #include "main.h"
-
 
 static bool exception_btrace = false;
 
@@ -179,6 +179,7 @@ int libre_init(void)
  */
 void libre_close(void)
 {
+	auresamp_ext_cleanup();
 	(void)fd_setsize(0);
 	net_sock_close();
 	re_thread_close();

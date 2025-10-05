@@ -37,5 +37,6 @@ int  auresamp_setup(struct auresamp *rs, uint32_t irate, unsigned ich,
 int  auresamp(struct auresamp *rs, int16_t *outv, size_t *outc,
 	      const int16_t *inv, size_t inc);
 void auresamp_close(struct auresamp *rs);
+void auresamp_ext_cleanup(void);
 size_t auresamp_calc_output_size(uint32_t irate, uint32_t orate, 
 				 size_t input_samples, unsigned ch);

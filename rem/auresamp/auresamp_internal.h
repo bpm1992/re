@@ -29,6 +29,7 @@ struct auresamp_ext_ctx {
 	uint32_t irate, orate;
 	unsigned ich, och;
 	bool initialized;
+	struct le le;  /**< List element for registry */
 };
 
 /* Internal functions */

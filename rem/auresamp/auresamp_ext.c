@@ -4,8 +4,11 @@
  * Copyright (C) 2025 - Enhanced for non-integer ratios
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <re.h>
+#include <rem_fir.h>
+#include <rem_auresamp.h>
 #include "auresamp_internal.h"
 
 #ifdef USE_LIBSWRESAMPLE
@@ -18,6 +21,99 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
 
+/** Global registry of external resampler contexts */
+static struct {
+	struct list ctxl;  /**< List of active contexts */
+	mtx_t *lock;       /**< Mutex for thread safety */
+	bool closing;      /**< Flag to prevent deadlock during cleanup */
+} auresamp_ext_registry = {
+	.ctxl = LIST_INIT,
+	.lock = NULL,
+	.closing = false
+};
+
+/**
+ * Close the external resampler registry and clean up all contexts
+ */
+static void auresamp_ext_registry_close(void);
+
+/**
+ * Initialize the external resampler registry
+ */
+static int auresamp_ext_registry_init(void)
+{
+	int err;
+
+	if (auresamp_ext_registry.lock)
+		return 0;  /* Already initialized */
+
+	err = mutex_alloc(&auresamp_ext_registry.lock);
+	if (err)
+		return err;
+
+	/* Register cleanup on process exit */
+	atexit(auresamp_ext_registry_close);
+
+	return 0;
+}
+
+/**
+ * Close the external resampler registry and clean up all contexts
+ */
+static void auresamp_ext_registry_close(void)
+{
+	struct le *le;
+
+	if (!auresamp_ext_registry.lock)
+		return;
+
+	mtx_lock(auresamp_ext_registry.lock);
+	auresamp_ext_registry.closing = true;
+	le = auresamp_ext_registry.ctxl.head;
+	while (le) {
+		struct auresamp_ext_ctx *ctx = le->data;
+		le = le->next;
+
+		mem_deref(ctx);
+	}
+	mtx_unlock(auresamp_ext_registry.lock);
+
+	mem_deref(auresamp_ext_registry.lock);
+	auresamp_ext_registry.lock = NULL;
+	auresamp_ext_registry.closing = false;
+}
+
+/**
+ * Register a context in the global registry
+ */
+static int auresamp_ext_registry_register(struct auresamp_ext_ctx *ctx)
+{
+	int err;
+
+	err = auresamp_ext_registry_init();
+	if (err)
+		return err;
+
+	mtx_lock(auresamp_ext_registry.lock);
+	list_append(&auresamp_ext_registry.ctxl, &ctx->le, ctx);
+	mtx_unlock(auresamp_ext_registry.lock);
+
+	return 0;
+}
+
+/**
+ * Unregister a context from the global registry
+ */
+static void auresamp_ext_registry_unregister(struct auresamp_ext_ctx *ctx)
+{
+	if (!auresamp_ext_registry.lock || auresamp_ext_registry.closing)
+		return;
+
+	mtx_lock(auresamp_ext_registry.lock);
+	list_unlink(&ctx->le);
+	mtx_unlock(auresamp_ext_registry.lock);
+}
+
 /**
  * Destructor for external resampler context
  */
@@ -28,10 +124,11 @@ static void auresamp_ext_ctx_destructor(void *data)
 	if (!ctx)
 		return;
 
+	/* Unregister from global registry */
+	auresamp_ext_registry_unregister(ctx);
+
 #ifdef USE_LIBSWRESAMPLE
 	/* Debug: Track cleanup */
-	re_printf("auresamp_ext: Cleaning up external context (%u->%u Hz)\n",
-	          ctx->irate, ctx->orate);
 	
 	if (ctx->src_data) {
 		av_freep(&ctx->src_data[0]);
@@ -122,6 +219,13 @@ int auresamp_ext_ctx_setup(struct auresamp_ext_ctx **ctx, uint32_t irate,
 	ext_ctx->initialized = true;
 	*ctx = ext_ctx;
 
+	/* Register in global registry for emergency cleanup */
+	ret = auresamp_ext_registry_register(ext_ctx);
+	if (ret) {
+		mem_deref(ext_ctx);
+		return ret;
+	}
+
 	return 0;
 #else
 	(void)ctx;
@@ -211,4 +315,23 @@ void auresamp_ext_ctx_close(struct auresamp_ext_ctx *ctx)
 
 	/* The destructor will handle libswresample cleanup automatically */
 	mem_deref(ctx);
+}
+
+#ifdef __GNUC__
+/**
+ * Library destructor - clean up any unfreed contexts on library unload
+ */
+static void __attribute__((destructor)) auresamp_ext_lib_destructor(void)
+{
+	auresamp_ext_registry_close();
+}
+#endif
+
+/**
+ * Public cleanup function for emergency cleanup of all external resampler contexts
+ * Call this from libre_close() to prevent memory leaks
+ */
+void auresamp_ext_cleanup(void)
+{
+	auresamp_ext_registry_close();
 }
