@@ -21,7 +21,9 @@
 #include <re_main.h>
 #include <re_trace.h>
 #include <re_btrace.h>
+#ifdef USE_LIBSWRESAMPLE
 #include <rem_audio.h>
+#endif
 #include "main.h"
 
 static bool exception_btrace = false;
@@ -179,7 +181,9 @@ int libre_init(void)
  */
 void libre_close(void)
 {
+#ifdef USE_LIBSWRESAMPLE
 	auresamp_ext_cleanup();
+#endif
 	(void)fd_setsize(0);
 	net_sock_close();
 	re_thread_close();

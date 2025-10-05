@@ -40,6 +40,7 @@ static void auresamp_ext_registry_close(void);
 /**
  * Initialize the external resampler registry
  */
+#ifdef USE_LIBSWRESAMPLE
 static int auresamp_ext_registry_init(void)
 {
 	int err;
@@ -56,6 +57,7 @@ static int auresamp_ext_registry_init(void)
 
 	return 0;
 }
+#endif
 
 /**
  * Close the external resampler registry and clean up all contexts
@@ -86,6 +88,7 @@ static void auresamp_ext_registry_close(void)
 /**
  * Register a context in the global registry
  */
+#ifdef USE_LIBSWRESAMPLE
 static int auresamp_ext_registry_register(struct auresamp_ext_ctx *ctx)
 {
 	int err;
@@ -100,10 +103,12 @@ static int auresamp_ext_registry_register(struct auresamp_ext_ctx *ctx)
 
 	return 0;
 }
+#endif
 
 /**
  * Unregister a context from the global registry
  */
+#ifdef USE_LIBSWRESAMPLE
 static void auresamp_ext_registry_unregister(struct auresamp_ext_ctx *ctx)
 {
 	if (!auresamp_ext_registry.lock || auresamp_ext_registry.closing)
@@ -113,23 +118,24 @@ static void auresamp_ext_registry_unregister(struct auresamp_ext_ctx *ctx)
 	list_unlink(&ctx->le);
 	mtx_unlock(auresamp_ext_registry.lock);
 }
+#endif
 
 /**
  * Destructor for external resampler context
  */
+#ifdef USE_LIBSWRESAMPLE
 static void auresamp_ext_ctx_destructor(void *data)
 {
 	struct auresamp_ext_ctx *ctx = data;
-	
+    
 	if (!ctx)
 		return;
 
 	/* Unregister from global registry */
 	auresamp_ext_registry_unregister(ctx);
 
-#ifdef USE_LIBSWRESAMPLE
 	/* Debug: Track cleanup */
-	
+    
 	if (ctx->src_data) {
 		av_freep(&ctx->src_data[0]);
 		av_freep(&ctx->src_data);
@@ -141,8 +147,8 @@ static void auresamp_ext_ctx_destructor(void *data)
 	if (ctx->swr_ctx) {
 		swr_free(&ctx->swr_ctx);
 	}
-#endif
 }
+#endif
 
 
 /**
