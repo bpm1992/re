@@ -63,7 +63,8 @@ int test_auresamp(void)
 
 	auresamp_init(&rs);
 
-	err = auresamp_setup(&rs, SRATE, CHANNELS_IN, SRATE, CHANNELS_OUT);
+	err = auresamp_setup(&rs, SRATE, CHANNELS_IN, SRATE, CHANNELS_OUT,
+			     SAMPLES, false);
 	TEST_ERR(err);
 
 	/* resample from mono to stereo */

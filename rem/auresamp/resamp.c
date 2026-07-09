@@ -182,21 +182,30 @@ void auresamp_init(struct auresamp *rs)
 /**
  * Configure a resampler object
  *
- * @note The sample rate ratio must be an integer
- *
- * @param rs    Resampler
- * @param irate Input sample rate
- * @param ich   Input channel count
- * @param orate Output sample rate
- * @param och   Output channel count
+ * @param rs               Resampler
+ * @param irate            Input sample rate
+ * @param ich              Input channel count
+ * @param orate            Output sample rate
+ * @param och              Output channel count
+ * @param period_in_frames Maximum input frames per auresamp()/auresampf()
+ *                         call (one JACK period's worth). Only consulted
+ *                         when the external (libswresample) resampler is
+ *                         needed, i.e. for non-integer ratios or float
+ *                         samples.
+ * @param use_float        true to set up for auresampf() (float samples),
+ *                         false for auresamp() (int16 samples). Float
+ *                         samples always use the external resampler, since
+ *                         the built-in FIR path is int16-only.
  *
  * @return 0 if success, otherwise error code
  */
 int auresamp_setup(struct auresamp *rs, uint32_t irate, unsigned ich,
-		   uint32_t orate, unsigned och)
+		   uint32_t orate, unsigned och,
+		   size_t period_in_frames, bool use_float)
 {
 	int err;
-	
+	bool can_use_simple;
+
 	if (!rs || !irate || !ich || !orate || !och)
 		return EINVAL;
 
@@ -207,18 +216,20 @@ int auresamp_setup(struct auresamp *rs, uint32_t irate, unsigned ich,
 		rs->use_external = false;
 	}
 
-	if (orate == irate && och == ich) {
+	if (orate == irate && och == ich && !use_float) {
 		auresamp_init(rs);
 		return 0;
 	}
 
-	/* First, try the built-in simple resampler */
-	bool can_use_simple = true;
-	
-	if (orate >= irate) {
+	rs->use_float = use_float;
+
+	/* The built-in FIR path only supports int16 samples */
+	can_use_simple = !use_float;
+
+	if (can_use_simple && orate >= irate) {
 		if (orate % irate)
 			can_use_simple = false;
-	} else {
+	} else if (can_use_simple) {
 		if (irate % orate)
 			can_use_simple = false;
 	}
@@ -313,7 +324,8 @@ int auresamp_setup(struct auresamp *rs, uint32_t irate, unsigned ich,
 
 	/* Simple resampler can't handle this, try external resampler */
 	struct auresamp_ext_ctx *ext_ctx = NULL;
-	err = auresamp_ext_ctx_setup(&ext_ctx, irate, ich, orate, och);
+	err = auresamp_ext_ctx_setup(&ext_ctx, irate, ich, orate, och,
+	                             period_in_frames, use_float);
 	if (err == 0) {
 		rs->ext_ctx = ext_ctx;
 		rs->use_external = true;
@@ -352,6 +364,9 @@ int auresamp(struct auresamp *rs, int16_t *outv, size_t *outc,
 	size_t incc, outcc;
 
 	if (!rs || !outv || !outc || !inv)
+		return EINVAL;
+
+	if (rs->use_float)
 		return EINVAL;
 
 	/* Use external resampler if active */
@@ -395,6 +410,67 @@ int auresamp(struct auresamp *rs, int16_t *outv, size_t *outc,
 	}
 
 	return 0;
+}
+
+
+/**
+ * Resample float samples. Only valid when the resampler was configured
+ * with use_float=true in auresamp_setup() -- the built-in FIR path is
+ * int16-only, so float always goes through the external resampler.
+ *
+ * @param rs   Resampler
+ * @param outv Output samples
+ * @param outc Output sample count (in/out)
+ * @param inv  Input samples
+ * @param inc  Input sample count
+ *
+ * @return 0 if success, otherwise error code
+ */
+int auresampf(struct auresamp *rs, float *outv, size_t *outc,
+	      const float *inv, size_t inc)
+{
+	if (!rs || !outv || !outc || !inv)
+		return EINVAL;
+
+	if (!rs->use_float || !rs->use_external || !rs->ext_ctx)
+		return EINVAL;
+
+	return auresamp_ext_ctx_convert_f((struct auresamp_ext_ctx *)rs->ext_ctx,
+	                                  outv, outc, inv, inc);
+}
+
+
+/**
+ * Return the number of input frames needed to produce out_frames output.
+ *
+ * For the external (libswresample) path, swr_get_delay is consulted so the
+ * caller does not over-drain the app playout buffer.  For the built-in
+ * integer-ratio path the stored ratio is used directly.
+ *
+ * @param rs         Resampler (may be NULL)
+ * @param out_frames Desired output frames (not samples)
+ * @return           Required input frames; 0 when out_frames is 0
+ */
+size_t auresamp_get_input_frames(const struct auresamp *rs, size_t out_frames)
+{
+	if (!rs || !out_frames)
+		return 0;
+
+	if (rs->use_external && rs->ext_ctx) {
+		int64_t n = auresamp_ext_needed_input_frames(
+			(const struct auresamp_ext_ctx *)rs->ext_ctx,
+			(int64_t)out_frames);
+		return (size_t)(n > 0 ? n : 0);
+	}
+
+	/* Built-in integer-ratio path */
+	if (!rs->ratio)
+		return out_frames;
+
+	if (rs->up)
+		return (out_frames + rs->ratio - 1) / rs->ratio;  /* ceil */
+	else
+		return out_frames * rs->ratio;
 }
 
 
