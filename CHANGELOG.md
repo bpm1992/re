@@ -5,6 +5,22 @@ All notable changes to libre will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v4.1.0+gmc - 2026-06-11 (GMC — decimal-resamp branch)
+
+### Added
+
+* auresamp: `auresamp_get_input_frames()` — public API (`include/rem_auresamp.h`) that returns the exact number of input frames needed to produce a given number of output frames. Dispatches to `auresamp_ext_needed_input_frames()` for libswresample resamplers (uses `swr_get_delay()` to account for internally buffered samples) and computes the equivalent analytically for the built-in FIR path.
+* auresamp: `auresamp_ext_needed_input_frames()` — internal helper in `auresamp_ext.c` that calls `swr_get_delay()` and applies `av_rescale_rnd(AV_ROUND_UP)` to determine the precise input count, eliminating the need for a fixed over-request margin.
+* auresamp: `auresamp_ext` / `auresamp_ext_close` — libswresample wrapper (`rem/auresamp/auresamp_ext.c`) for non-integer sample rate ratios such as 44100 ↔ 48000 (ratio 160:147). Integer ratios continue using the built-in FIR path.
+* auresamp: `auresamp_close()` — public function to release libswresample contexts (`swr_ctx`, `src_data`, `dst_data`), preventing a memory leak on shutdown. Called from baresip teardown.
+* cmake: Detect `libswresample` / `libavutil` via `cmake/re-config.cmake`; define `USE_LIBSWRESAMPLE` when found.
+
+### Fixed
+
+* auresamp: Guard `auresamp_ext.c` and the shutdown cleanup path with `#ifdef USE_LIBSWRESAMPLE` so the library builds cleanly on systems without FFmpeg.
+
+---
+
 ## v4.1.0 - 2025-09-10
 
 ### What's Changed
